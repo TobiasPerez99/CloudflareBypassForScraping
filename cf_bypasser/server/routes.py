@@ -11,10 +11,11 @@ from fastapi.responses import JSONResponse
 from cf_bypasser.core.bypasser import CamoufoxBypasser
 from cf_bypasser.core.mirror import RequestMirror
 from cf_bypasser.server.models import (
-    CookieRequest, CookieResponse, MirrorRequestHeaders,
-    MirrorResponse, CacheStatsResponse, CacheClearResponse, ErrorResponse,
-    MirrorRequestInfo, CookieGenerationInfo
+    CookieRequest, CookieResponse, HeadersResponse, HeadersMetadata,
+    MirrorRequestHeaders, MirrorResponse, CacheStatsResponse, CacheClearResponse,
+    ErrorResponse, MirrorRequestInfo, CookieGenerationInfo
 )
+from cf_bypasser.utils.misc import md5_hash
 
 # Global instances
 global_bypasser = None
@@ -145,6 +146,93 @@ def setup_routes(app: FastAPI):
             raise
         except Exception as e:
             logger.error(f"Error getting cookies for {url}: {e}")
+            raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+    @app.get("/get-headers", response_model=HeadersResponse, responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})
+    async def get_headers(
+        request: Request,
+        url: Optional[str] = Query(None, description="Target URL to get headers for"),
+        retries: int = Query(5, ge=1, le=10, description="Number of retry attempts")
+    ):
+        """
+        Get Cloudflare clearance cookies and headers for a URL.
+        Returns both the cookies and formatted HTTP headers ready to use.
+
+        If the cookies are cached, returns them immediately.
+        If not cached, generates new cookies by solving Cloudflare challenge.
+        """
+        # Check if this is a mirror request (has x-hostname header)
+        headers = dict(request.headers)
+        if any(key.lower() == 'x-hostname' for key in headers.keys()):
+            raise HTTPException(
+                status_code=400,
+                detail="x-hostname header not supported for /get-headers endpoint. Use direct URL parameter."
+            )
+
+        # url is required
+        if not url:
+            raise HTTPException(
+                status_code=400,
+                detail="url parameter is required"
+            )
+
+        # Validate URL
+        if not is_safe_url(url):
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid or unsafe URL - localhost and private IPs are not allowed"
+            )
+
+        try:
+            start_time = time.time()
+            logger.info(f"Getting headers for {url} (retries: {retries})")
+
+            # Use the global bypasser or create a new one
+            bypasser = global_bypasser or CamoufoxBypasser(max_retries=retries, log=True)
+
+            # Get cookies using the cache system (no proxy)
+            data = await bypasser.get_or_generate_cookies(url, proxy=None)
+
+            if not data:
+                raise HTTPException(status_code=500, detail="Failed to bypass Cloudflare protection")
+
+            # Extract hostname and generate cache key to access metadata
+            hostname = urlparse(url).netloc
+            cache_key = md5_hash(hostname + "")  # Empty string for no proxy
+
+            # Access cache metadata
+            cached = bypasser.cookie_cache.cache.get(cache_key)
+            if not cached:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Cache metadata not found after cookie generation"
+                )
+
+            # Format cookies as HTTP header string
+            cookies_str = "; ".join([f"{name}={value}" for name, value in data["cookies"].items()])
+            formatted_headers = f"Cookie: {cookies_str}\nUser-Agent: {data['user_agent']}"
+
+            generation_time = int((time.time() - start_time) * 1000)
+            cf_cookies = [name for name in data["cookies"].keys() if name.startswith(('cf_', '__cf'))]
+
+            logger.info(f"Successfully generated {len(data['cookies'])} cookies in {generation_time}ms")
+            logger.info(f"Cloudflare cookies: {cf_cookies}")
+            logger.info(f"Cache expires at: {cached.expires_at.isoformat()}")
+
+            return HeadersResponse(
+                cookies=data["cookies"],
+                user_agent=data["user_agent"],
+                metadata=HeadersMetadata(
+                    timestamp=cached.timestamp.isoformat(),
+                    expires_at=cached.expires_at.isoformat()
+                ),
+                formatted_headers=formatted_headers
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error getting headers for {url}: {e}")
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
     @app.get("/html", responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}})

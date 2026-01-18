@@ -22,6 +22,20 @@ class CookieResponse(BaseModel):
     user_agent: str = Field(..., description="User agent used for cookie generation")
 
 
+class HeadersMetadata(BaseModel):
+    """Metadata for cached headers."""
+    timestamp: str = Field(..., description="When the cookies were generated (ISO format)")
+    expires_at: str = Field(..., description="When the cookies expire (ISO format)")
+
+
+class HeadersResponse(BaseModel):
+    """Response model for get-headers endpoint."""
+    cookies: Dict[str, str] = Field(..., description="Generated cookies")
+    user_agent: str = Field(..., description="User agent used for cookie generation")
+    metadata: HeadersMetadata = Field(..., description="Cache metadata")
+    formatted_headers: str = Field(..., description="HTTP-ready headers (Cookie and User-Agent)")
+
+
 class MirrorRequestHeaders(BaseModel):
     """Headers model for mirror requests."""
     x_hostname: str = Field(..., alias="x-hostname", description="Target hostname")
