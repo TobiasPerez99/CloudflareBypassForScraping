@@ -1,12 +1,14 @@
 import logging
 import re
 import time
+import json
 from contextlib import asynccontextmanager
 from typing import Optional, AsyncGenerator
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Request, Response, Query, Depends
 from fastapi.responses import JSONResponse
+from bs4 import BeautifulSoup
 
 from cf_bypasser.core.bypasser import CamoufoxBypasser
 from cf_bypasser.core.mirror import RequestMirror
@@ -310,6 +312,194 @@ def setup_routes(app: FastAPI):
             raise
         except Exception as e:
             logger.info(f"Error getting HTML content for {url}: {e}")
+            raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+    @app.api_route("/zonaprop/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+    async def zonaprop_request(request: Request, path: str = ""):
+        """
+        ZonaProp-specific endpoint that extracts preloaded state JSON from the page.
+
+        This endpoint:
+        1. Mirrors the request through Cloudflare bypass (same as regular mirroring)
+        2. Parses the HTML response with BeautifulSoup
+        3. Extracts the script tag with id="preloadedData"
+        4. Parses window.__PRELOADED_STATE__ JSON
+        5. Returns only the JSON data
+
+        Required Headers:
+        - x-hostname: Target hostname (e.g., "zonaProp.com.ar")
+
+        Optional Headers:
+        - x-proxy: Proxy URL (http://, https://, socks4://, socks5://)
+        - x-bypass-cache: Force fresh cookie generation (true/false)
+        """
+        try:
+            start_time = time.time()
+
+            # Extract headers
+            headers = dict(request.headers)
+
+            # Extract mirror-specific headers
+            hostname = None
+            proxy = None
+            bypass_cache = False
+
+            for key, value in headers.items():
+                key_lower = key.lower()
+                if key_lower == 'x-hostname':
+                    hostname = value
+                elif key_lower == 'x-proxy':
+                    proxy = value
+                elif key_lower == 'x-bypass-cache':
+                    bypass_cache = value.lower() in ('true', '1', 'yes', 'on')
+
+            # Validate required headers
+            if not hostname:
+                raise HTTPException(
+                    status_code=400,
+                    detail="x-hostname header is required for ZonaProp requests"
+                )
+
+            # Validate hostname
+            if not is_safe_url(f"https://{hostname}"):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid or unsafe hostname - localhost and private IPs are not allowed"
+                )
+
+            # Validate proxy format if provided
+            if proxy and not proxy.startswith(('http://', 'https://', 'socks4://', 'socks5://')):
+                raise HTTPException(
+                    status_code=400,
+                    detail="x-proxy must start with http://, https://, socks4://, or socks5://"
+                )
+
+            logger.info(f"ZonaProp request: {request.method} {hostname}/{path}")
+            if proxy:
+                logger.info(f"Using proxy: {proxy}")
+            if bypass_cache:
+                logger.info("x-bypass-cache header detected - forcing fresh cookie generation")
+
+            # Get request body
+            body = await request.body()
+
+            # Get query string
+            query_string = str(request.query_params)
+
+            # Use the global mirror or create a new one
+            mirror = global_mirror or RequestMirror(global_bypasser)
+
+            # Mirror the request to get HTML content
+            status_code, response_headers, response_content = await mirror.mirror_request(
+                method=request.method,
+                path=f"/{path}" if path else "/",
+                query_string=query_string,
+                headers=headers,
+                body=body
+            )
+
+            # Check if request was successful
+            if status_code != 200:
+                logger.warning(f"ZonaProp request returned status {status_code}")
+                raise HTTPException(
+                    status_code=status_code,
+                    detail=f"Target server returned status {status_code}"
+                )
+
+            # Parse HTML with BeautifulSoup
+            html_content = response_content.decode('utf-8', errors='ignore')
+            soup = BeautifulSoup(html_content, 'lxml')
+
+            # Find script tag with id="preloadedData"
+            script_tag = soup.find('script', id="preloadedData")
+
+            if not script_tag:
+                logger.error("No script tag found with id='preloadedData'")
+                raise HTTPException(
+                    status_code=404,
+                    detail="No script tag found with id='preloadedData' in the page"
+                )
+
+            # Extract script text
+            script_text = script_tag.text.strip()
+
+            # Find window.__PRELOADED_STATE__ marker
+            preloaded_state_marker = 'window.__PRELOADED_STATE__ = '
+            start_index = script_text.find(preloaded_state_marker)
+
+            if start_index == -1:
+                logger.error("window.__PRELOADED_STATE__ marker not found in script")
+                raise HTTPException(
+                    status_code=404,
+                    detail="window.__PRELOADED_STATE__ marker not found in script tag"
+                )
+
+            # Extract JSON starting after the marker
+            json_start = start_index + len(preloaded_state_marker)
+            json_text = script_text[json_start:].strip()
+
+            # Find the end of the JSON object (usually ends with }; or }\n)
+            # Parse the JSON to ensure it's valid
+            try:
+                # Try to parse the JSON - it should be a complete object
+                # Handle potential trailing semicolon or other characters
+                json_text_cleaned = json_text
+
+                # Remove trailing semicolon if present
+                if json_text_cleaned.endswith(';'):
+                    json_text_cleaned = json_text_cleaned[:-1]
+
+                # Parse the JSON
+                preloaded_data = json.loads(json_text_cleaned)
+
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON: {e}")
+                # Try to find the end of the JSON object more carefully
+                try:
+                    # Find matching closing brace
+                    brace_count = 0
+                    json_end = 0
+                    for i, char in enumerate(json_text):
+                        if char == '{':
+                            brace_count += 1
+                        elif char == '}':
+                            brace_count -= 1
+                            if brace_count == 0:
+                                json_end = i + 1
+                                break
+
+                    if json_end > 0:
+                        json_text_cleaned = json_text[:json_end]
+                        preloaded_data = json.loads(json_text_cleaned)
+                    else:
+                        raise HTTPException(
+                            status_code=500,
+                            detail=f"Failed to extract valid JSON: {str(e)}"
+                        )
+                except Exception as parse_error:
+                    logger.error(f"Failed to parse JSON after cleanup: {parse_error}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to parse JSON from script tag: {str(parse_error)}"
+                    )
+
+            processing_time = int((time.time() - start_time) * 1000)
+            logger.info(f"ZonaProp request completed successfully in {processing_time}ms")
+
+            # Return the JSON data
+            return JSONResponse(
+                content=preloaded_data,
+                headers={
+                    "x-cf-bypasser-version": "2.0.0",
+                    "x-processing-time-ms": str(processing_time),
+                    "x-cache-bypassed": str(bypass_cache).lower()
+                }
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error processing ZonaProp request: {e}")
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
     @app.post("/cache/clear", response_model=CacheClearResponse, responses={500: {"model": ErrorResponse}})

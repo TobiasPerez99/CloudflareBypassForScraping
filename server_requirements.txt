@@ -6,3 +6,5 @@ pyvirtualdisplay
 playwright-captcha
 camoufox[geoip]
 curl_cffi
+beautifulsoup4>=4.9.0
+lxml>=4.9.0
