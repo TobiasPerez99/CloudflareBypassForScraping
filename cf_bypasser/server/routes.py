@@ -489,11 +489,6 @@ def setup_routes(app: FastAPI):
             # Return the JSON data
             return JSONResponse(
                 content=preloaded_data,
-                headers={
-                    "x-cf-bypasser-version": "2.0.0",
-                    "x-processing-time-ms": str(processing_time),
-                    "x-cache-bypassed": str(bypass_cache).lower()
-                }
             )
 
         except HTTPException:
