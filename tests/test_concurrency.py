@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, patch
 from cf_bypasser.cache.cookie_cache import CookieCache, CachedCookies
 from cf_bypasser.utils.misc import get_cookie_gen_lock, get_browser_semaphore
 from cf_bypasser.core.bypasser import CamoufoxBypasser
+from cf_bypasser.core.mirror import RequestMirror
 
 
 def _fresh_cache(tmp_path):
@@ -91,3 +92,17 @@ async def test_generation_timeout_returns_none(tmp_path, monkeypatch):
 
     assert result is None
     importlib.reload(bmod)  # restore default timeout for other tests
+
+
+def test_should_invalidate_on_403_only_when_version_unchanged(tmp_path):
+    bypasser = CamoufoxBypasser(cache_file=str(tmp_path / "c.json"))
+    mirror = RequestMirror(bypasser)
+
+    bypasser.cookie_cache.set("k", {"cf_clearance": "v2"}, "UA")  # version = 1
+    current_version = bypasser.cookie_cache.get("k").version
+
+    # Request had used the current cookie -> genuinely burned -> invalidate.
+    assert mirror._should_invalidate_after_403("k", used_version=current_version) is True
+
+    # Request had used an OLDER cookie; a newer one exists -> do NOT invalidate.
+    assert mirror._should_invalidate_after_403("k", used_version=current_version - 1) is False

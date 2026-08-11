@@ -96,7 +96,18 @@ class RequestMirror:
             self.session_cache[session_key] = session
         
         return self.session_cache[session_key]
-    
+
+    def _should_invalidate_after_403(self, cache_key: str, used_version: int) -> bool:
+        """Only invalidate if the cookie we used is still the current one.
+
+        If a newer cookie already exists, another request regenerated it while
+        our request was in flight — invalidating would poison the fresh cookie.
+        """
+        current = self.bypasser.cookie_cache.get(cache_key)
+        if current is None:
+            return False  # nothing to invalidate; retry will regenerate anyway
+        return current.version <= used_version
+
     async def mirror_request(
         self,
         method: str,
@@ -129,10 +140,12 @@ class RequestMirror:
                     self.bypasser.cookie_cache.invalidate(cache_key)
 
                 cf_data = await self.bypasser.get_or_generate_cookies(target_url, proxy)
-                
+
                 if not cf_data:
                     raise Exception("Failed to get Cloudflare clearance cookies")
-                
+
+                used_version = cf_data.get("version", 0)
+
                 # Strip mirror headers and prepare request headers
                 clean_headers = self.strip_mirror_headers(headers)
                 
@@ -184,14 +197,17 @@ class RequestMirror:
                 
                 # Check if we got a 403 Forbidden response
                 if status_code == 403 and attempt < max_retries:
-                    logging.warning(f"Got 403 Forbidden from {hostname}, invalidating cache and retrying...")
-                    
-                    # Invalidate the cached cookies for this hostname
                     parsed_hostname = urlparse(target_url).netloc
                     cache_key = md5_hash(parsed_hostname + (proxy or ""))
-                    self.bypasser.cookie_cache.invalidate(cache_key)
-                    
-                    # Wait a bit before retrying
+                    if self._should_invalidate_after_403(cache_key, used_version):
+                        logging.warning(
+                            f"Got 403 from {hostname}; cookie v{used_version} still current, invalidating and retrying..."
+                        )
+                        self.bypasser.cookie_cache.invalidate(cache_key)
+                    else:
+                        logging.warning(
+                            f"Got 403 from {hostname}; a newer cookie exists, retrying without invalidating..."
+                        )
                     await asyncio.sleep(.5)
                     continue
                 
