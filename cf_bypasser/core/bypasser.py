@@ -12,7 +12,7 @@ from playwright_captcha.utils.camoufox_add_init_script.add_init_script import ge
 
 from cf_bypasser.utils.misc import md5_hash, get_browser_init_lock
 from cf_bypasser.cache.cookie_cache import CookieCache
-from cf_bypasser.utils.config import BrowserConfig, OPERATING_SYSTEMS
+from cf_bypasser.utils.config import BrowserConfig, OPERATING_SYSTEMS, DEFAULT_LOCALE
 
 # Get addon path for Camoufox init script workaround
 ADDON_PATH = get_addon_path()
@@ -52,8 +52,11 @@ class CamoufoxBypasser:
             self.log_message(f"Error parsing proxy {proxy}: {e}")
             return None
 
-    async def setup_browser(self, proxy: Optional[str] = None, lang: str = "en", user_agent: Optional[str] = None) -> tuple:
+    async def setup_browser(self, proxy: Optional[str] = None, lang: Optional[str] = None, user_agent: Optional[str] = None) -> tuple:
         """Setup Camoufox browser with random OS and configuration. Returns (browser, context, page)."""
+        # Locale must match the proxy IP's geography (geoip=True); default to the
+        # configured BYPASS_LOCALE (e.g. es-AR) instead of English.
+        lang = lang or DEFAULT_LOCALE
         # Clear expired cache entries
         self.cookie_cache.clear_expired()
         
