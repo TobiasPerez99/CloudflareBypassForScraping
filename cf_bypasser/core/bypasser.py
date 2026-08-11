@@ -287,6 +287,8 @@ class CamoufoxBypasser:
         except Exception as e:
             self.log_message(f"Error in _generate_cookies_once: {e}")
             return None
+        # NOTE: if wait_for cancels between camoufox launch and setup_browser's return,
+        # the handle isn't in scope here and the process may orphan; scripts/cleanup_stale.sh sweeps those.
         finally:
             await self.cleanup_browser(camoufox, browser, context, page)
 
@@ -339,6 +341,7 @@ class CamoufoxBypasser:
 
     async def get_or_generate_html(self, url: str, proxy: Optional[str] = None, bypass_cache: bool = False) -> Optional[Dict[str, Any]]:
         """Get HTML content along with cookies (cached or fresh)."""
+        # NOTE: unlike get_or_generate_cookies, this path is not behind the single-flight lock or browser semaphore. It is only reached by the (currently unwired) /html route.
         hostname = urlparse(url).netloc
         cache_key = md5_hash(hostname + (proxy or ""))
         

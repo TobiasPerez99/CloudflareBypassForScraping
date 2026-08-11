@@ -1,6 +1,6 @@
 import asyncio
 import pytest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 from cf_bypasser.cache.cookie_cache import CookieCache, CachedCookies
 from cf_bypasser.utils.misc import get_cookie_gen_lock, get_browser_semaphore
 from cf_bypasser.core.bypasser import CamoufoxBypasser
