@@ -82,9 +82,11 @@ arregla el envenenamiento por 403).
 **2. `cf_bypasser/cache/cookie_cache.py` — versión de cookie**
 
 - `CachedCookies` gana un campo `version: int`.
-- Un contador global incremental (o el `timestamp` en microsegundos) asigna la
-  `version` en cada `set`. Cada cookie nueva tiene una `version` estrictamente mayor
-  que la anterior para ese cache_key.
+- Un **contador global incremental** en `CookieCache` (protegido por el `RLock`
+  existente) asigna la `version` en cada `set`: se incrementa y se asigna dentro del
+  lock. Así cada cookie nueva tiene una `version` estrictamente mayor que cualquier
+  anterior, globalmente monótona. (Se elige contador y no timestamp para evitar
+  colisiones si dos `set` ocurren en el mismo tick de reloj.)
 - `to_dict`/`from_dict` serializan `version` (con default 0 si falta, para tolerar
   el archivo de cache viejo en disco).
 
