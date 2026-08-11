@@ -106,3 +106,30 @@ def test_should_invalidate_on_403_only_when_version_unchanged(tmp_path):
 
     # Request had used an OLDER cookie; a newer one exists -> do NOT invalidate.
     assert mirror._should_invalidate_after_403("k", used_version=current_version - 1) is False
+
+
+@pytest.mark.asyncio
+async def test_semaphore_caps_concurrent_browsers(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAX_CONCURRENT_BROWSERS", "2")
+    import importlib
+    import cf_bypasser.core.bypasser as bmod
+    importlib.reload(bmod)
+
+    bypasser = bmod.CamoufoxBypasser(cache_file=str(tmp_path / "c.json"))
+    state = {"active": 0, "max": 0}
+
+    async def fake_generate_once(url, proxy=None):
+        state["active"] += 1
+        state["max"] = max(state["max"], state["active"])
+        await asyncio.sleep(0.05)
+        state["active"] -= 1
+        return {"cookies": {"cf_clearance": "z"}, "user_agent": "UA"}
+
+    with patch.object(bypasser, "_generate_cookies_once", side_effect=fake_generate_once):
+        await asyncio.gather(*[
+            bypasser.get_or_generate_cookies(f"https://host{i}.example.com/p.html")
+            for i in range(5)
+        ])
+
+    assert state["max"] <= 2, f"semaphore breached: {state['max']}"
+    importlib.reload(bmod)
