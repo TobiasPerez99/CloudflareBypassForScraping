@@ -15,11 +15,12 @@ class CachedCookies:
     user_agent: str
     timestamp: datetime
     expires_at: datetime
-    
+    version: int = 0
+
     def is_expired(self) -> bool:
         """Check if the cached cookies are expired."""
         return datetime.now() >= self.expires_at
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
@@ -27,9 +28,10 @@ class CachedCookies:
             'cookies': self.cookies,
             'user_agent': self.user_agent,
             'timestamp': self.timestamp.isoformat(),
-            'expires_at': self.expires_at.isoformat()
+            'expires_at': self.expires_at.isoformat(),
+            'version': self.version,
         }
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'CachedCookies':
         """Create from dictionary for deserialization."""
@@ -38,7 +40,8 @@ class CachedCookies:
             cookies=data['cookies'],
             user_agent=data['user_agent'],
             timestamp=datetime.fromisoformat(data['timestamp']),
-            expires_at=datetime.fromisoformat(data['expires_at'])
+            expires_at=datetime.fromisoformat(data['expires_at']),
+            version=data.get('version', 0),
         )
 
 
@@ -50,6 +53,9 @@ class CookieCache:
         self.cache: Dict[str, CachedCookies] = {}
         self.lock = threading.RLock()
         self._load_cache()
+        self._version_counter = max(
+            (c.version for c in self.cache.values()), default=0
+        )
     
     def _load_cache(self):
         """Load cache from file."""
@@ -90,13 +96,15 @@ class CookieCache:
     def set(self, hostname: str, cookies: Dict[str, str], user_agent: str, ttl_hours: int = 2):
         """Cache cookies for hostname with TTL."""
         with self.lock:
+            self._version_counter += 1
             expires_at = datetime.now() + timedelta(hours=ttl_hours)
             cached = CachedCookies(
                 hostname=hostname,
                 cookies=cookies,
                 user_agent=user_agent,
                 timestamp=datetime.now(),
-                expires_at=expires_at
+                expires_at=expires_at,
+                version=self._version_counter,
             )
             self.cache[hostname] = cached
             self._save_cache()
